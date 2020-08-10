@@ -47,7 +47,7 @@ impl TypeMapKey for ServerList {
 
 #[group]
 #[prefix("server")]
-#[commands(server_add, server_list)]
+#[commands(server_add, server_list, server_cmd)]
 struct ServerCmd;
 
 #[command]
@@ -58,7 +58,7 @@ fn server_add(ctx: &mut Context, msg: &Message, mut args: Args) -> CommandResult
 
     dbg!(&server_addr);
 
-    let mut ec_stream = TcpStream::connect(server_addr.clone());
+    let ec_stream = TcpStream::connect(server_addr.clone());
 
     match ec_stream {
         Ok(mut stream) => {
@@ -81,6 +81,7 @@ fn server_add(ctx: &mut Context, msg: &Message, mut args: Args) -> CommandResult
                                         let servers = data.get_mut::<ServerList>().expect("Expected ServerList in ShareMap.");
                                         let id = servers.next_id;
                                         servers.next_id += 1;
+                                        stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
                                         servers.servers.insert(id, Server { addr: server_addr, socket: stream });
                                         msg.channel_id.say(&ctx.http, &format!("server authed & added"));
                                         break;
@@ -101,6 +102,51 @@ fn server_add(ctx: &mut Context, msg: &Message, mut args: Args) -> CommandResult
         },
         Err(err) => {
             if let Err(why) = msg.channel_id.say(&ctx.http, &format!("failed to connect {:?}", err)) {
+                println!("Error sending message: {:?}", why);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[command]
+#[aliases("cmd")]
+fn server_cmd(ctx: &mut Context, msg: &Message, mut args: Args) -> CommandResult {
+    let server_id = args.single::<usize>()?;
+    let cmd = args.rest();
+
+    let mut data = ctx.data.write();
+    let servers = data.get_mut::<ServerList>().expect("Expected ServerList in ShareMap.");
+
+    match servers.servers.get_mut(&server_id) {
+        Some(ref mut server) => {
+            println!("exec {}", &cmd);
+            let cmd = format!("{}\r\n", cmd);
+            server.socket.write(cmd.as_bytes());
+
+            let mut stream_reader = BufReader::new(&server.socket);
+            let mut buf = Vec::new();
+            'read_back: loop {
+                buf.clear();
+                match stream_reader.read_until(b'\0', &mut buf) {
+                    Ok(0) => break 'read_back,
+                    Ok(num) => {
+                        let line = std::str::from_utf8(&buf);
+                        match line {
+                            Ok(string) => {
+                                let text = string.trim_end_matches(&['\r', '\n', '\0'][..]);
+                                msg.channel_id.say(&ctx.http, &format!("[{}] :: {:?}", server_id, text));
+                            }
+                            _ => { }
+                        }
+                    }
+                    Err(err) => break 'read_back,
+                }
+            }
+        }
+        None => {
+            if let Err(why) = msg.channel_id.say(&ctx.http, &format!("server not registered {:?}", server_id)) {
                 println!("Error sending message: {:?}", why);
             }
         }
@@ -135,6 +181,7 @@ fn server_list(ctx: &mut Context, msg: &Message) -> CommandResult {
 
     Ok(())
 }
+
 #[group]
 #[prefix("team")]
 #[commands(team_add, team_list)]
