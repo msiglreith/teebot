@@ -32,16 +32,22 @@ impl TypeMapKey for TeamList {
 }
 
 struct Server {
+    addr: String,
     socket: TcpStream,
+}
+
+struct ServerListImpl {
+    next_id: usize,
+    servers: HashMap<usize, Server>,
 }
 struct ServerList;
 impl TypeMapKey for ServerList {
-    type Value = Vec<Server>;
+    type Value = ServerListImpl;
 }
 
 #[group]
 #[prefix("server")]
-#[commands(server_add)]
+#[commands(server_add, server_list)]
 struct ServerCmd;
 
 #[command]
@@ -52,7 +58,7 @@ fn server_add(ctx: &mut Context, msg: &Message, mut args: Args) -> CommandResult
 
     dbg!(&server_addr);
 
-    let mut ec_stream = TcpStream::connect(server_addr);
+    let mut ec_stream = TcpStream::connect(server_addr.clone());
 
     match ec_stream {
         Ok(mut stream) => {
@@ -73,7 +79,9 @@ fn server_add(ctx: &mut Context, msg: &Message, mut args: Args) -> CommandResult
                                     "Authentication successful. External console access granted." => {
                                         let mut data = ctx.data.write();
                                         let servers = data.get_mut::<ServerList>().expect("Expected ServerList in ShareMap.");
-                                        servers.push(Server { socket: stream });
+                                        let id = servers.next_id;
+                                        servers.next_id += 1;
+                                        servers.servers.insert(id, Server { addr: server_addr, socket: stream });
                                         msg.channel_id.say(&ctx.http, &format!("server authed & added"));
                                         break;
                                     }
@@ -101,6 +109,32 @@ fn server_add(ctx: &mut Context, msg: &Message, mut args: Args) -> CommandResult
     Ok(())
 }
 
+#[command]
+#[aliases("list")]
+fn server_list(ctx: &mut Context, msg: &Message) -> CommandResult {
+    let data = ctx.data.read();
+    let servers = data.get::<ServerList>().expect("Expected ServerList in ShareMap.");
+
+    let webhook_id = env::var("DISCORD_HOOK_ID").expect("Expected a webhook id in the environment").parse::<u64>().unwrap_or(0);
+    let webhook_token = env::var("DISCORD_HOOK_TOKEN").expect("Expected a webhook token in the environment");
+    let webhook = ctx.http.get_webhook_with_token(webhook_id, &webhook_token).unwrap();
+
+    let embed_servers = Embed::fake(|e| {
+        let mut e = e.title("Servers")
+            .description("Currently registered servers");
+        for (id, server) in &servers.servers {
+            e = e.field(id, &server.addr, false);
+        }
+        e
+    });
+
+    let _ = webhook.execute(&ctx.http, false, |mut w| {
+        w.embeds(vec![embed_servers]);
+        w
+    });
+
+    Ok(())
+}
 #[group]
 #[prefix("team")]
 #[commands(team_add, team_list)]
@@ -177,7 +211,7 @@ fn main() {
     {
         let mut data = client.data.write();
         data.insert::<TeamList>(HashMap::default());
-        data.insert::<ServerList>(Vec::new());
+        data.insert::<ServerList>(ServerListImpl { next_id: 0, servers: HashMap::default()});
     }
 
     let (owners, bot_id) = match client.cache_and_http.http.get_current_application_info() {
