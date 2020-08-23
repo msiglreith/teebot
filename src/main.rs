@@ -52,6 +52,7 @@ struct ServerCmd;
 
 #[command]
 #[aliases("add")]
+#[allowed_roles("Tournament Stuff")]
 fn server_add(ctx: &mut Context, msg: &Message, mut args: Args) -> CommandResult {
     let server_addr = args.single::<String>()?;
     let password = args.single::<String>()?;
@@ -112,6 +113,7 @@ fn server_add(ctx: &mut Context, msg: &Message, mut args: Args) -> CommandResult
 
 #[command]
 #[aliases("cmd")]
+#[allowed_roles("Tournament Stuff")]
 fn server_cmd(ctx: &mut Context, msg: &Message, mut args: Args) -> CommandResult {
     let server_id = args.single::<usize>()?;
     let cmd = args.rest();
@@ -157,26 +159,22 @@ fn server_cmd(ctx: &mut Context, msg: &Message, mut args: Args) -> CommandResult
 
 #[command]
 #[aliases("list")]
+#[allowed_roles("Tournament Stuff")]
 fn server_list(ctx: &mut Context, msg: &Message) -> CommandResult {
     let data = ctx.data.read();
     let servers = data.get::<ServerList>().expect("Expected ServerList in ShareMap.");
 
-    let webhook_id = env::var("DISCORD_HOOK_ID").expect("Expected a webhook id in the environment").parse::<u64>().unwrap_or(0);
-    let webhook_token = env::var("DISCORD_HOOK_TOKEN").expect("Expected a webhook token in the environment");
-    let webhook = ctx.http.get_webhook_with_token(webhook_id, &webhook_token).unwrap();
+    let _ = msg.channel_id.send_message(&ctx.http, |m| {
+        m.embed(|mut e| {
+            let mut e = e.title("Servers")
+                .description("Currently registered servers");
+            for (id, server) in &servers.servers {
+                e = e.field(id, &server.addr, false);
+            }
+            e
+        });
 
-    let embed_servers = Embed::fake(|e| {
-        let mut e = e.title("Servers")
-            .description("Currently registered servers");
-        for (id, server) in &servers.servers {
-            e = e.field(id, &server.addr, false);
-        }
-        e
-    });
-
-    let _ = webhook.execute(&ctx.http, false, |mut w| {
-        w.embeds(vec![embed_servers]);
-        w
+        m
     });
 
     Ok(())
@@ -190,29 +188,34 @@ struct TeamCmd;
 #[command]
 #[aliases("add")]
 fn team_add(ctx: &mut Context, msg: &Message, mut args: Args) -> CommandResult {
-    let team_name = args.single::<String>()?;
+    if let Some(channel) = ctx.cache.read().guild_channel(msg.channel_id) {
+        // ignore guild for now
+        if channel.read().name == "sign-up" {
+            let team_name = args.single::<String>()?;
 
-    let mut team = Team { tees: Vec::new() };
-    for tee in &msg.mentions {
-        if tee.bot {
-            continue;
+            let mut team = Team { tees: Vec::new() };
+            for tee in &msg.mentions {
+                if tee.bot {
+                    continue;
+                }
+                team.tees.push(tee.name.clone());
+            }
+
+            if team.tees.is_empty() {
+                if let Err(why) = msg.channel_id.say(&ctx.http, "can't add team with 0 members") {
+                    println!("Error sending message: {:?}", why);
+                }
+                return Ok(());
+            }
+
+            let mut data = ctx.data.write();
+            let teams = data.get_mut::<TeamList>().expect("Expected TeamList in ShareMap.");
+            teams.entry(team_name.clone()).or_insert(team);
+
+            if let Err(why) = msg.channel_id.say(&ctx.http, &format!("added team {}", &team_name)) {
+                println!("Error sending message: {:?}", why);
+            }
         }
-        team.tees.push(tee.name.clone());
-    }
-
-    if team.tees.is_empty() {
-        if let Err(why) = msg.channel_id.say(&ctx.http, "can't add team with 0 members") {
-            println!("Error sending message: {:?}", why);
-        }
-        return Ok(());
-    }
-
-    let mut data = ctx.data.write();
-    let teams = data.get_mut::<TeamList>().expect("Expected TeamList in ShareMap.");
-    teams.entry(team_name.clone()).or_insert(team);
-
-    if let Err(why) = msg.channel_id.say(&ctx.http, &format!("added team {}", &team_name)) {
-        println!("Error sending message: {:?}", why);
     }
 
     Ok(())
@@ -224,27 +227,22 @@ fn team_list(ctx: &mut Context, msg: &Message) -> CommandResult {
     let data = ctx.data.read();
     let teams = data.get::<TeamList>().expect("Expected TeamList in ShareMap.");
 
-    let webhook_id = env::var("DISCORD_HOOK_ID").expect("Expected a webhook id in the environment").parse::<u64>().unwrap_or(0);
-    let webhook_token = env::var("DISCORD_HOOK_TOKEN").expect("Expected a webhook token in the environment");
-    let webhook = ctx.http.get_webhook_with_token(webhook_id, &webhook_token).unwrap();
-
-    let embed_teams = Embed::fake(|e| {
-        let mut e = e.title("Teams")
-            .description("Currently registered teams");
-        for (i, (name, team)) in teams.iter().enumerate() {
-            let mut tees = String::new();
-            for tee in &team.tees {
-                tees += tee;
-                tees += " ";
+    let _ = msg.channel_id.send_message(&ctx.http, |m| {
+        m.embed(|mut e| {
+            e.title("Teams")
+                .description("Currently registered teams");
+            for (i, (name, team)) in teams.iter().enumerate() {
+                let mut tees = String::new();
+                for tee in &team.tees {
+                    tees += tee;
+                    tees += " ";
+                }
+                e = e.field(name, tees, false);
             }
-            e = e.field(name, tees, false);
-        }
-        e
-    });
+            e
+        });
 
-    let _ = webhook.execute(&ctx.http, false, |mut w| {
-        w.embeds(vec![embed_teams]);
-        w
+        m
     });
 
     Ok(())
